@@ -53,6 +53,12 @@ const betterncm={
         async getBetterNCMVersion(){
             return await(await fetch(BETTERNCM_API_PATH+"/app/version",{headers:{BETTERNCM_API_KEY}})).text() 
         },
+		async takeBackgroundScreenshot(){
+            return await(await fetch(BETTERNCM_API_PATH+"/app/bg_screenshot",{headers:{BETTERNCM_API_KEY}})).text() 
+        },
+		async getNCMWinPos(){
+            return await(await fetch(BETTERNCM_API_PATH+"/app/get_win_position")).json() 
+        },
 		async reloadPlugins(){
             return await(await fetch(BETTERNCM_API_PATH+"/app/reload_plugin",{headers:{BETTERNCM_API_KEY}})).text() 
         },
@@ -197,7 +203,19 @@ async function loadPlugins() {
     for (let name in loadedPlugins) loadedPlugins[name].injects.forEach(v => v._allLoaded?.call(loadedPlugins[name], loadedPlugins))
 }
 
-window.addEventListener("load",loadPlugins);
+window.addEventListener("load",async ()=>{
+	await loadPlugins();
+	if(!("PluginMarket" in loadedPlugins)){
+		let attempts=parseInt(localStorage["cc.microblock.loader.reloadPluginAttempts"]||"0");
+		if(attempts<3){
+			localStorage["cc.microblock.loader.reloadPluginAttempts"] = attempts+1;
+			document.location.reload()
+		}else{
+			localStorage["cc.microblock.loader.reloadPluginAttempts"] = "0";
+			alert("Failed to load plugins! Attempted for "+ attempts +" times");
+		}
+	}
+});
 )";
 
 const auto plugin_manager_script = R"(
@@ -231,18 +249,37 @@ function dom(tag, settings, ...children) {
 
 
 
-betterncm.utils.waitForElement(".g-mn-set").then(async (settingsDom) => {
-    let updatey;
+betterncm.utils.waitForElement(".g-mn-set").then(async(settingsDom)=>{
+
+ settingsDom.prepend(
+        dom("div", { style: { marginLeft: "30px" } },
+            dom("div", { style: { display: "flex", flexDirection: "column", alignItems: "center" } },
+                dom("img", { src: "https://s1.ax1x.com/2022/08/11/vGlJN8.png", style: { width: "60px" } }),
+                dom("div", { innerText: "BetterNCM II", style: { fontSize: "20px", fontWeight: "700" } }),
+                dom("div", { innerText: "v" + await betterncm.app.getBetterNCMVersion() }),
+                dom("div",{class:["BetterNCM-PM-Updatey"]}),
+                dom("div", { style: { marginBottom: "20px" } },
+                    dom("a", { class: ["u-ibtn5", "u-ibtnsz8"], innerText: "Open Folder", onclick: async () => { await betterncm.app.exec(`explorer "${(await betterncm.app.getDataPath()).replace(/\//g,"\\")}"`,false,true) }, style: { margin: "5px" } }),
+					dom("a", { class: ["u-ibtn5", "u-ibtnsz8"], innerText: "Show Console", onclick: async () => { await betterncm.app.showConsole() }, style: { margin: "5px" } }),
+					dom("a", { class: ["u-ibtn5", "u-ibtnsz8"], innerText: "Reload Plugins", onclick: async () => { await betterncm.app.reloadPlugins();document.location.reload(); }, style: { margin: "5px" } }),
+                )
+            ),
+            dom("div", { class: ["BetterNCM-Plugin-Configs"] })
+        ));
+
+(async () => {
+
+
     try {
         let currentVersion = await betterncm.app.getBetterNCMVersion()
         let ncmVersion = document.querySelector(".fstbtn>span").innerText.split(" ")[0]
         let online = await (await fetch("https://gitee.com/microblock/better-ncm-v2-data/raw/master/betterncm/betterncm.json")).json()
         let onlineSuitableVersions = online.versions.filter(v => v.supports.includes(ncmVersion))
 
-        if (onlineSuitableVersions.length === 0) updatey = dom("div", { innerText: decodeURI("BetterNCM%E6%9A%82%E6%9C%AA%E5%AE%98%E6%96%B9%E6%94%AF%E6%8C%81%E8%AF%A5%E7%89%88%E6%9C%AC%EF%BC%8C%E5%8F%AF%E8%83%BD%E4%BC%9A%E5%87%BA%E7%8E%B0Bug") });
+        if (onlineSuitableVersions.length === 0) document.querySelector(".BetterNCM-PM-Updatey").appendChild(dom("div", { innerText: decodeURI("BetterNCM%E6%9A%82%E6%9C%AA%E5%AE%98%E6%96%B9%E6%94%AF%E6%8C%81%E8%AF%A5%E7%89%88%E6%9C%AC%EF%BC%8C%E5%8F%AF%E8%83%BD%E4%BC%9A%E5%87%BA%E7%8E%B0Bug") }));
 
         if (currentVersion != onlineSuitableVersions[0].version) {
-            updatey = dom("div",
+            document.querySelector(".BetterNCM-PM-Updatey").appendChild(dom("div",
                 {
                     style:
                         { display: "flex", flexDirection: "column", alignItems: "center" }
@@ -257,29 +294,17 @@ betterncm.utils.waitForElement(".g-mn-set").then(async (settingsDom) => {
                             await betterncm.fs.writeFile("./betterncm.dll", await (await fetch(onlineSuitableVersions[0].file)).blob())
 
                             if (!ncmpath.toLowerCase().includes("system")) {
-                                betterncm.app.exec(`cmd /c @echo off & echo BetterNCM Updating... & cd "${ncmpath}" & taskkill /f /im cloudmusic.exe>nul & taskkill /f /im cloudmusicn.exe>nul & ping 127.0.0.1>nul & del msimg32.dll & move "${dllpath}" .\\msimg32.dll & start cloudmusic.exe`, true)
+                                betterncm.app.exec(`cmd /c @echo off & echo BetterNCM Updating... & cd /d C:/ & cd C:/ & cd /d ${ncmpath[0]}:/ & cd "${ncmpath}" & taskkill /f /im cloudmusic.exe>nul & taskkill /f /im cloudmusicn.exe>nul & ping 127.0.0.1>nul & del msimg32.dll & move "${dllpath}" .\\msimg32.dll & start cloudmusic.exe`, true)
                             }
                         }
-                    }))
+                    })))
         }
 
     } catch (e) { }
 
-    settingsDom.prepend(
-        dom("div", { style: { marginLeft: "30px" } },
-            dom("div", { style: { display: "flex", flexDirection: "column", alignItems: "center" } },
-                dom("img", { src: "https://s1.ax1x.com/2022/08/11/vGlJN8.png", style: { width: "60px" } }),
-                dom("div", { innerText: "BetterNCM II", style: { fontSize: "20px", fontWeight: "700" } }),
-                dom("div", { innerText: "v" + await betterncm.app.getBetterNCMVersion() }),
-                updatey,
-                dom("div", { style: { marginBottom: "20px" } },
-                    dom("a", { class: ["u-ibtn5", "u-ibtnsz8"], innerText: "Open Folder", onclick: async () => { await betterncm.app.exec(`explorer "${await betterncm.app.getDataPath()}"`,false,true) }, style: { margin: "5px" } }),
-					dom("a", { class: ["u-ibtn5", "u-ibtnsz8"], innerText: "Show Console", onclick: async () => { await betterncm.app.showConsole() }, style: { margin: "5px" } })
-                )
-            ),
-            dom("div", { class: ["BetterNCM-Plugin-Configs"] })
-        ))
-
+   
+})();
+(async ()=>{
     await betterncm.utils.waitForFunction(() => window.loadedPlugins)
 
     const tools = {
@@ -298,6 +323,8 @@ betterncm.utils.waitForElement(".g-mn-set").then(async (settingsDom) => {
         document.querySelector(".BetterNCM-Plugin-Configs").appendChild(dom("div", { innerText: name, style: { fontSize: "18px", fontWeight: 600 } }))
         document.querySelector(".BetterNCM-Plugin-Configs").appendChild(dom("div", { style: { padding: "7px" } }, loadedPlugins[name].injects[0]._config?.call(loadedPlugins[name], tools)))
     }
+})()
+
 })
 )";
 
@@ -556,10 +583,7 @@ std::thread* App::create_server(string apiKey) {
 
 		svr.Get("/api/app/ncmpath", [&](const httplib::Request& req, httplib::Response& res) {
 			checkApiKey;
-			TCHAR buffer[MAX_PATH] = { 0 };
-			GetCurrentDirectory(MAX_PATH, buffer);
-			wstring path = buffer;
-			res.set_content(ws2s(path), "text/plain");
+			res.set_content(getNCMPath(), "text/plain");
 			});
 
 		svr.Get("/api/app/version", [&](const httplib::Request& req, httplib::Response& res) {
@@ -586,9 +610,34 @@ std::thread* App::create_server(string apiKey) {
 
 		svr.Get("/api/app/show_console", [&](const httplib::Request& req, httplib::Response& res) {
 			checkApiKey;
-			AllocConsole();
-			freopen("CONOUT$", "w", stdout);
+			ShowWindow(GetConsoleWindow(), SW_SHOW);
 			res.status = 200;
+			});
+
+		svr.Get("/api/app/bg_screenshot", [&](const httplib::Request& req, httplib::Response& res) {
+			checkApiKey;
+			HWND ncmWin = FindWindow(L"OrpheusBrowserHost", NULL);
+			SetWindowDisplayAffinity(ncmWin, WDA_EXCLUDEFROMCAPTURE);
+			screenCapturePart(s2ws(datapath + "/screenshot.bmp").c_str());
+			res.set_content("http://localhost:3248/local/screenshot.bmp", "text/plain");
+			SetWindowDisplayAffinity(ncmWin, WDA_NONE);
+			});
+
+		svr.Get("/api/app/get_win_position", [&](const httplib::Request& req, httplib::Response& res) {
+			HWND ncmWin = FindWindow(L"OrpheusBrowserHost", NULL);
+			int x=0, y=0;
+			RECT rect = { NULL };
+
+			int xo = GetSystemMetrics(SM_XVIRTUALSCREEN);
+			int yo = GetSystemMetrics(SM_YVIRTUALSCREEN);
+
+			if (GetWindowRect(ncmWin, &rect)) {
+				x = rect.left;
+				y = rect.top;
+			}
+
+			res.set_content((string("{\"x\":")) + to_string(x-xo) + ",\"y\":" + to_string(y-yo) + "}", "application/json");
+
 			});
 
 		svr.Get("/api/app/open_file_dialog", [&](const httplib::Request& req, httplib::Response& res) {
@@ -616,7 +665,7 @@ std::thread* App::create_server(string apiKey) {
 
 		svr.set_mount_point("/local", datapath);
 
-		svr.listen("0.0.0.0", 3248);
+		svr.listen("127.0.0.1", 3248);
 		});
 }
 
@@ -643,7 +692,7 @@ std::string random_string(std::string::size_type length)
 App::App() {
 	extractPlugins();
 
-	auto apiKey = random_string(1024);
+	auto apiKey = random_string(64);
 
 	server_thread = create_server(apiKey);
 
@@ -656,12 +705,18 @@ App::App() {
 #endif
 			) {
 			auto cef_browser_host = browser->get_host(browser);
-			CefWindowInfo windowInfo{};
-			CefBrowserSettings settings{};
-			CefPoint point{};
-			windowInfo.SetAsPopup(NULL, "EasyCEFInject DevTools");
-
-			cef_browser_host->show_dev_tools(cef_browser_host, &windowInfo, client, &settings, &point);
+			if (browser->get_host(browser)->has_dev_tools(cef_browser_host))
+			{
+				browser->get_host(browser)->close_dev_tools(cef_browser_host);
+			}
+			else
+			{
+				CefWindowInfo windowInfo {};
+				CefBrowserSettings settings {};
+				CefPoint point {};
+				windowInfo.SetAsPopup(NULL, "EasyCEFInject DevTools");
+				cef_browser_host->show_dev_tools(cef_browser_host, &windowInfo, client, &settings, &point);
+			}
 		}
 	};
 
