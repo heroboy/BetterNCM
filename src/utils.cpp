@@ -1,13 +1,19 @@
 #include "pch.h"
-#include "utils.h"
 #include <ole2.h>
 #include <olectl.h>
+#include "utils.h"
+#include <assert.h>
+#pragma comment(lib, "version.lib")
 
-string read_to_string(const string& path) {
-	std::ifstream t(path);
-	std::stringstream buffer;
-	buffer << t.rdbuf();
-	return string(buffer.str());
+extern HMODULE g_hModule;
+BNString read_to_string(const BNString& path) {
+	std::ifstream file(path.gbk());
+	if (!file) {
+		throw new exception("Failed to open file");
+	}
+	string content = string((std::istreambuf_iterator<char>(file)),
+		std::istreambuf_iterator<char>());
+	return content;
 }
 
 // https://stackoverflow.com/questions/4804298/how-to-convert-wstring-into-string   (modified)
@@ -35,8 +41,8 @@ std::wstring s2ws(const std::string& s, bool isUtf8)
 }
 
 
-void write_file_text(const string& path, const string& text, bool append) {
-	ofstream file;
+void write_file_text(const BNString& path, const BNString& text, bool append) {
+	std::wofstream file;
 	if (append)
 		file.open(path, std::ios_base::app);
 	else
@@ -47,18 +53,19 @@ void write_file_text(const string& path, const string& text, bool append) {
 }
 
 // https://stackoverflow.com/questions/4130180/how-to-use-vs-c-getenvironmentvariable-as-cleanly-as-possible
-string getEnvironment(const string& key) {
-	return ws2s(wstring(_wgetenv(s2ws(key).c_str())));
+BNString getEnvironment(const BNString& key) {
+	if (!_wgetenv(key.c_str()))return BNString("");
+	return ws2s(wstring(_wgetenv(key.c_str())));
 }
 
-string datapath ="\\betterncm";
+BNString datapath = "\\betterncm";
 
-string getNCMPath() {
+BNString getNCMPath() {
 	wchar_t buffer[MAX_PATH];
 	GetModuleFileNameW(NULL, buffer, MAX_PATH);
 	std::wstring::size_type pos = std::wstring(buffer).find_last_of(L"\\/");
 
-	return ws2s(std::wstring(buffer).substr(0, pos));
+	return std::wstring(buffer).substr(0, pos);
 }
 
 string get_command_line() {
@@ -69,7 +76,7 @@ string get_command_line() {
 
 
 // https://stackoverflow.com/questions/9524393/how-to-capture-part-of-the-screen-and-save-it-to-a-bmp
-bool screenCapturePart( LPCWSTR fname) {
+bool screenCapturePart(LPCWSTR fname) {
 	HDC hdcSource = GetDC(NULL);
 	HDC hdcMemory = CreateCompatibleDC(hdcSource);
 
@@ -152,29 +159,164 @@ bool saveBitmap(LPCWSTR filename, HBITMAP bmp, HPALETTE pal)
 	return result;
 }
 
-//string read_to_string(const string& path) {
-//	std::ifstream t(path);
-//	std::stringstream buffer;
-//	buffer << t.rdbuf();
-//	return string(buffer.str());
-//}
-////
-//string ws2s(const wstring& str) {
-//	using convert_typeX = std::codecvt_utf8<wchar_t>;
-//	std::wstring_convert<convert_typeX, wchar_t> converterX;
-//
-//	return converterX.to_bytes(str);
-//}
-//
-//bool check_legal_file_path(const string& path) {
-//	return pystring::find(path, "..") == -1;
-//}
-//
-//void write_file_text(const string& path, const string& text) {
-//	ofstream file;
-//	file.open(path);
-//	file << text;
-//	file.close();
-//}
-//
-//string datapath = string(getenv("USERPROFILE")) + "\\betterncm"
+std::string load_string_resource(LPCTSTR name)
+{
+	HRSRC hRes = FindResource(g_hModule, name, RT_RCDATA);
+	assert(hRes);
+	DWORD size = SizeofResource(g_hModule, hRes);
+	HGLOBAL hGlobal = LoadResource(g_hModule, hRes);
+	assert(hGlobal);
+
+	std::string ret;
+
+	const uint8_t bom[3] = { 0xEF, 0xBB, 0xBF };
+	uint8_t* ptr = (uint8_t*)LockResource(hGlobal);
+
+	if (size >= 3 && memcmp(bom, ptr, 3) == 0)
+	{
+		ret.assign((char*)ptr + 3, (size_t)size - 3);
+	}
+	else
+	{
+		ret.assign((char*)ptr, (size_t)size);
+	}
+
+	UnlockResource(ptr);
+	return ret;
+}
+
+std::string wstring_to_utf8(const std::wstring& str)
+{
+	std::string ret;
+	int len = WideCharToMultiByte(CP_UTF8, 0, str.c_str(), str.length(), NULL, 0, NULL, NULL);
+	if (len > 0)
+	{
+		ret.resize(len);
+		WideCharToMultiByte(CP_UTF8, 0, str.c_str(), str.length(), &ret[0], len, NULL, NULL);
+	}
+	return ret;
+}
+
+// https://stackoverflow.com/questions/7153935/how-to-convert-utf-8-stdstring-to-utf-16-stdwstring
+std::wstring utf8_to_wstring(const std::string& utf8)
+{
+	std::vector<unsigned long> unicode;
+	size_t i = 0;
+	while (i < utf8.size())
+	{
+		unsigned long uni;
+		size_t todo;
+		bool error = false;
+		unsigned char ch = utf8[i++];
+		if (ch <= 0x7F)
+		{
+			uni = ch;
+			todo = 0;
+		}
+		else if (ch <= 0xBF)
+		{
+			throw std::logic_error("not a UTF-8 string");
+		}
+		else if (ch <= 0xDF)
+		{
+			uni = ch & 0x1F;
+			todo = 1;
+		}
+		else if (ch <= 0xEF)
+		{
+			uni = ch & 0x0F;
+			todo = 2;
+		}
+		else if (ch <= 0xF7)
+		{
+			uni = ch & 0x07;
+			todo = 3;
+		}
+		else
+		{
+			throw std::logic_error("not a UTF-8 string");
+		}
+		for (size_t j = 0; j < todo; ++j)
+		{
+			if (i == utf8.size())
+				throw std::logic_error("not a UTF-8 string");
+			unsigned char ch = utf8[i++];
+			if (ch < 0x80 || ch > 0xBF)
+				throw std::logic_error("not a UTF-8 string");
+			uni <<= 6;
+			uni += ch & 0x3F;
+		}
+		if (uni >= 0xD800 && uni <= 0xDFFF)
+			throw std::logic_error("not a UTF-8 string");
+		if (uni > 0x10FFFF)
+			throw std::logic_error("not a UTF-8 string");
+		unicode.push_back(uni);
+	}
+	std::wstring utf16;
+	for (size_t i = 0; i < unicode.size(); ++i)
+	{
+		unsigned long uni = unicode[i];
+		if (uni <= 0xFFFF)
+		{
+			utf16 += (wchar_t)uni;
+		}
+		else
+		{
+			uni -= 0x10000;
+			utf16 += (wchar_t)((uni >> 10) + 0xD800);
+			utf16 += (wchar_t)((uni & 0x3FF) + 0xDC00);
+		}
+	}
+	return utf16;
+}
+
+semver::version getNCMExecutableVersion() {
+	DWORD  verHandle = 0;
+	UINT   size = 0;
+	LPBYTE lpBuffer = NULL;
+	DWORD  verSize = GetFileVersionInfoSize((getNCMPath() + L"\\cloudmusic.exe").c_str(), &verHandle);
+
+	if (verSize != NULL)
+	{
+		LPSTR verData = new char[verSize];
+
+		if (GetFileVersionInfo((getNCMPath() + L"\\cloudmusic.exe").c_str(), verHandle, verSize, verData))
+		{
+			if (VerQueryValue(verData, L"\\", (VOID FAR * FAR*) & lpBuffer, &size))
+			{
+				if (size)
+				{
+					VS_FIXEDFILEINFO* verInfo = (VS_FIXEDFILEINFO*)lpBuffer;
+					if (verInfo->dwSignature == 0xfeef04bd)
+					{
+						return semver::version{
+							(uint8_t)((verInfo->dwFileVersionMS >> 16) & 0xffff),
+							(uint8_t)((verInfo->dwFileVersionMS >> 0) & 0xffff),
+							(uint8_t)((verInfo->dwFileVersionLS >> 16) & 0xffff)
+						};
+					}
+				}
+			}
+		}
+		delete[] verData;
+	}
+}
+
+std::wstring wreplaceAll(std::wstring str, const std::wstring& from, const std::wstring& to) {
+	size_t start_pos = 0;
+	while ((start_pos = str.find(from, start_pos)) != std::wstring::npos) {
+		str.replace(start_pos, from.length(), to);
+		start_pos += to.length(); // Handles case where 'to' is a substring of 'from'
+	}
+	return str;
+}
+
+void alert(const wchar_t* item)
+{
+	MessageBoxW(NULL, item, L"BetterNCM", MB_OK | MB_ICONINFORMATION);
+}
+
+void alert(const wstring* item)
+{
+	MessageBoxW(NULL, item->c_str(), L"BetterNCM", MB_OK | MB_ICONINFORMATION);
+}

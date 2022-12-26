@@ -10,7 +10,8 @@
 
 // 添加要在此处预编译的标头
 #include "framework.h"
-#include "kubazip/zip/zip.h"
+
+#include <regex>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -19,10 +20,14 @@
 #include "httplib.h"
 #include "nlohmann/json.hpp"
 #include <ctime>
-#include "createfiles.h"
 #include <filesystem>
 #include <locale>
 #include <codecvt>
 #include <Windows.h>
 #include <thread>
+#include "neargye/semver.hpp"
+#include "kubazip/zip/zip.h"
+
+using std::string, std::vector, std::wstring, std::to_string, std::cout, std::endl, std::exception, std::ofstream, std::error_code, std::map;
 #endif //PCH_H
+

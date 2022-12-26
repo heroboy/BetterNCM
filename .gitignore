@@ -32,3 +32,16 @@
 .vs/
 Debug/
 Release/
+
+# https://github.com/microsoft/vcpkg/blob/master/.gitignore
+*.user
+*.aps
+
+# JS Framework
+.vscode/
+src/framework.js
+src/framework.js.map
+src/framework.css
+src/framework.css.map
+js-framework/node_modules/
+js-framework/package-lock.json
