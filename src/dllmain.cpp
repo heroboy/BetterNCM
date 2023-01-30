@@ -4,8 +4,9 @@
 #include <Windows.h>
 #include "App.h"
 #include "resource.h"
-#include "utils.h"
-
+#include "utils/utils.h"
+#include <stdlib.h>
+#include <NativePlugin.h>
 
 #pragma comment(linker, "/EXPORT:vSetDdrawflag=_AheadLib_vSetDdrawflag,@1")
 #pragma comment(linker, "/EXPORT:AlphaBlend=_AheadLib_AlphaBlend,@2") 
@@ -22,11 +23,11 @@
 #define ALCFAST EXTERNC EXPORT NAKED void __fastcall
 #define ALCDECL EXTERNC NAKED void __cdecl
 
-string script;
+std::string script;
 
 
-void message(string title, string text) {
-	MessageBox(NULL, s2ws(text).c_str(), s2ws(title).c_str(), 0);
+void message(const std::string& title, const std::string& text) {
+	MessageBox(NULL, util::s2ws(text).c_str(), util::s2ws(title).c_str(), 0);
 }
 
 
@@ -159,55 +160,131 @@ HMODULE  g_hModule = nullptr;
 
 extern BNString datapath;
 
+BNString process_type = "undetected";
+
+std::wstring PrintExceptionInfo(EXCEPTION_POINTERS* ExceptionInfo)
+{
+	std::wostringstream Stream;
+
+	EXCEPTION_RECORD* ExceptionRecord = ExceptionInfo->ExceptionRecord;
+	CONTEXT* ContextRecord = ExceptionInfo->ContextRecord;
+
+	Stream << L"Exception code: 0x" << std::hex << ExceptionRecord->ExceptionCode << std::endl;
+	Stream << L"Exception flags: 0x" << std::hex << ExceptionRecord->ExceptionFlags << std::endl;
+	Stream << L"Exception address: 0x" << std::hex << ExceptionRecord->ExceptionAddress << std::endl;
+
+	Stream << L"Context record:" << std::endl;
+	Stream << L"  EIP: 0x" << std::hex << ContextRecord->Eip << std::endl;
+	Stream << L"  ESP: 0x" << std::hex << ContextRecord->Esp << std::endl;
+	Stream << L"  EBP: 0x" << std::hex << ContextRecord->Ebp << std::endl;
+
+	return Stream.str();
+}
+
+LONG WINAPI BNUnhandledExceptionFilter(EXCEPTION_POINTERS* ExceptionInfo)
+{
+	HWND ncmWin = FindWindow(L"OrpheusBrowserHost", NULL);
+
+#define IGNORE_ERROR_EXIT(code) if(ExceptionInfo->ExceptionRecord->ExceptionCode==code){ util::killNCM(); return EXCEPTION_EXECUTE_HANDLER;}
+#define IGNORE_ERROR_RESTART(code) if(ExceptionInfo->ExceptionRecord->ExceptionCode==code){ util::restartNCM(); return EXCEPTION_EXECUTE_HANDLER; }
+#define IGNORE_ERROR_PASS_TO_NCM(code) if(ExceptionInfo->ExceptionRecord->ExceptionCode==code){ return EXCEPTION_CONTINUE_SEARCH; }
+#define IGNORE_ERROR_AUTO(code) if(ExceptionInfo->ExceptionRecord->ExceptionCode==code){ if(ncmWin) util::restartNCM(); else util::killNCM(); return EXCEPTION_EXECUTE_HANDLER;}
+	IGNORE_ERROR_AUTO(0xc0000005);
+	IGNORE_ERROR_AUTO(0xe0000008);
+
+	IGNORE_ERROR_AUTO(0x80000003);
+
+	int result = MessageBoxW(NULL,
+		(L"很抱歉，网易云音乐崩溃了！\n\n" +
+			PrintExceptionInfo(ExceptionInfo) +
+			L"In Process: " + process_type + L"\n" +
+			L"\n这有可能是由于插件引起的崩溃，要重启网易云音乐吗？\n\n点击 中止 以直接结束网易云\n点击 重试 以直接重启网易云\n点击 忽略 以禁用插件并重启网易云").c_str(),
+		L"BetterNCM 网易云音乐崩溃", MB_ABORTRETRYIGNORE | MB_ICONERROR);
+
+	if (result == IDABORT)
+	{
+		util::killNCM();
+	}
+	if (result == IDRETRY)
+	{
+		util::restartNCM();
+	}
+	if (result == IDIGNORE)
+	{
+		SetEnvironmentVariable(L"BETTERNCM_DISABLED_FLAG", L"1");
+		util::restartNCM();
+	}
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
+
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
 {
 	if (dwReason == DLL_PROCESS_ATTACH)
 	{
 		g_hModule = hModule;
-		if (pystring::find(get_command_line(), "--type") == -1) {
-			AllocConsole();
-			freopen("CONOUT$", "w", stdout);
-#ifndef _DEBUG
-			ShowWindow(GetConsoleWindow(), SW_HIDE);
-#endif
-
-
+		if (!getenv("BETTERNCM_DISABLED_FLAG")) {
+			if (util::get_command_line().includes(L"--type=renderer"))process_type = "renderer";
+			else if (util::get_command_line().includes(L"--type=gpu-process"))process_type = "gpu-process";
+			else if (util::get_command_line().includes(L"--type=utility"))process_type = "utility";
+			else process_type = "main";
 			namespace fs = std::filesystem;
+
+			SetUnhandledExceptionFilter(BNUnhandledExceptionFilter);
 
 			// Pick data folder
 			if (getenv("BETTERNCM_PROFILE")) {
-				datapath = getEnvironment("BETTERNCM_PROFILE");
+				datapath = util::getEnvironment("BETTERNCM_PROFILE");
 			}
 			else {
-				if ((int)fs::status(getEnvironment("USERPROFILE") + L"\\betterncm").permissions() & (int)std::filesystem::perms::owner_write) {
-					datapath = getEnvironment("USERPROFILE") + L"\\betterncm";
+				datapath = "C:\\betterncm"; // 不再向前兼容
+			}
+
+
+			if (process_type == L"main") {
+				AllocConsole();
+				freopen("CONOUT$", "w", stdout);
+#ifndef _DEBUG
+				ShowWindow(GetConsoleWindow(), SW_HIDE);
+#endif
+
+				std::wcout << L"Data folder picked: " << datapath << "\n";
+
+				if ((int)fs::status((std::wstring)datapath).permissions() & (int)std::filesystem::perms::owner_write) {
+					// Create data folder
+					fs::create_directories(datapath + L"/plugins");
+					// PluginMarket
+					HRSRC myResource = ::FindResource(hModule, MAKEINTRESOURCE(IDR_RCDATA1), RT_RCDATA);
+					unsigned int myResourceSize = ::SizeofResource(hModule, myResource);
+					HGLOBAL myResourceData = ::LoadResource(hModule, myResource);
+					void* pMyBinaryData = ::LockResource(myResourceData);
+					std::ofstream f(datapath + L"/plugins/PluginMarket.plugin", std::ios::out | std::ios::binary);
+					f.write((char*)pMyBinaryData, myResourceSize);
+					f.close();
+
+					// Inject NCM
+					app = new App();
 				}
 				else {
-					datapath = "C:\\betterncm";
+					util::alert(L"BetterNCM访问数据目录失败！可能需要以管理员身份运行或更改数据目录。\n\nBetterNCM将不会运行");
+				}
+			}
+			else if (process_type == L"renderer") {
+				EasyCEFHooks::InstallHooks();
+
+				while (std::filesystem::exists(datapath + L"/PLUGIN_EXTRACTING_LOCK.lock"))
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+				while (!std::filesystem::exists(datapath + L"/plugins_runtime"))
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+				PluginsLoader::loadAll();
+
+				for (auto& plugin : PluginsLoader::plugins) {
+					plugin.loadNativePluginDll();
 				}
 			}
 
-			std::wcout << L"Data folder picked: " << datapath << "\n";
-
-			if ((int)fs::status((wstring)datapath).permissions() & (int)std::filesystem::perms::owner_write) {
-				// Create data folder
-				fs::create_directories(datapath + L"/plugins");
-
-				// PluginMarket
-				HRSRC myResource = ::FindResource(hModule, MAKEINTRESOURCE(IDR_RCDATA1), RT_RCDATA);
-				unsigned int myResourceSize = ::SizeofResource(hModule, myResource);
-				HGLOBAL myResourceData = ::LoadResource(hModule, myResource);
-				void* pMyBinaryData = ::LockResource(myResourceData);
-				std::ofstream f(datapath + L"/plugins/PluginMarket.plugin", std::ios::out | std::ios::binary);
-				f.write((char*)pMyBinaryData, myResourceSize);
-				f.close();
-
-				// Inject NCM
-				app = new App();
-			}
-			else {
-				alert(L"BetterNCM访问数据目录失败！可能需要以管理员身份运行或更改数据目录。\n\nBetterNCM将不会运行");
-			}
 		}
 
 
@@ -227,7 +304,13 @@ BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, PVOID pvReserved)
 	}
 	else if (dwReason == DLL_PROCESS_DETACH)
 	{
-		delete app;
+		if (app)
+			delete app;
+
+		if (!getenv("BETTERNCM_DISABLED_FLAG")) {
+			EasyCEFHooks::UninstallHook();
+		}
+
 		for (INT i = 0; i < sizeof(m_dwReturn) / sizeof(DWORD); i++)
 		{
 			TlsFree(m_dwReturn[i]);

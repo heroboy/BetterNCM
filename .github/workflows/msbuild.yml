@@ -1,0 +1,59 @@
+name: MSBuild
+
+on:
+  push:
+    branches: [ "v2" ]
+  pull_request:
+    branches: [ "v2" ]
+    
+
+env:
+  SOLUTION_FILE_PATH: .
+  BUILD_CONFIGURATION: Release
+  VCPKG_DEFAULT_TRIPLET: x86-windows
+  VCPKG_INSTALLED_DIR: ./vcpkg_installed/
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions: write-all
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1.0.2
+      
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v10
+      with:
+        vcpkgGitCommitId: e69dd972ba64840955f46704ecce6241bf607c0f
+        runVcpkgInstall: true
+    - name: Install NPM packages
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: cd ./src/js-framework ; npm i
+
+    - name: Build
+      working-directory: ${{env.GITHUB_WORKSPACE}}
+      run: msbuild .\BetterNCMII.sln -p:Platform="x86" -p:Configuration=Release
+
+    - uses: "marvinpinto/action-automatic-releases@latest"
+      name: Upload to Github Release
+      with:
+        repo_token: "${{ secrets.GITHUB_TOKEN }}"
+        automatic_release_tag: "dev-nightly"
+        prerelease: true
+        title: "Latest Test Release"
+        files: ./Release/BetterNCMII.dll
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3.1.1
+      with:
+        name: BetterNCMII
+        path: ${{ github.workspace }}/Release/BetterNCMII.dll
+        
+

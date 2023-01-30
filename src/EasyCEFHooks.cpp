@@ -1,10 +1,7 @@
 #pragma once
 #include "pch.h"
 #include "EasyCEFHooks.h"
-#include <mmdeviceapi.h>
-#include <Audioclient.h>
-
-#define CAST_TO(target,to) reinterpret_cast<decltype(&to)>(target)
+#include "3rd/libcef/include/capi/cef_base_capi.h" 
 
 _cef_frame_t* frame = NULL;
 cef_v8context_t* contextl = NULL;
@@ -24,24 +21,13 @@ PVOID origin_cef_scheme_handler_create = NULL;
 PVOID origin_scheme_handler_read = NULL;
 PVOID origin_get_headers = NULL;
 
-std::function<void(struct _cef_browser_t* browser, struct _cef_frame_t* frame, cef_transition_type_t transition_type)> EasyCEFHooks::onLoadStart = [](auto browser, auto frame, auto transition_type) {};
+std::function<void(struct _cef_browser_t* browser, struct _cef_frame_t* frame)> EasyCEFHooks::onLoadStart = [](auto browser, auto frame) {};
 std::function<void(_cef_client_t*, struct _cef_browser_t*, const struct _cef_key_event_t*)> EasyCEFHooks::onKeyEvent = [](auto client, auto browser, auto key) {};
-std::function<bool(string)> EasyCEFHooks::onAddCommandLine = [](string arg) { return true;  };
-std::function<std::function<wstring(wstring)>(string)> EasyCEFHooks::onHijackRequest = [](string url) { return nullptr; };
+std::function<bool(std::string)> EasyCEFHooks::onAddCommandLine = [](std::string arg) { return true;  };
+std::function<std::function<std::wstring(std::wstring)>(std::string)> EasyCEFHooks::onHijackRequest = [](std::string url) { return nullptr; };
+std::function<void(struct _cef_command_line_t* command_line)> EasyCEFHooks::onCommandLine = [](struct _cef_command_line_t* command_line) {};
 
 
-cef_v8context_t* hook_cef_v8context_get_current_context() {
-	cef_v8context_t* context = CAST_TO(origin_cef_v8context_get_current_context, hook_cef_v8context_get_current_context)();
-
-	cef_browser_t* browser = context->get_browser(context);
-	auto host = browser->get_host(browser);
-
-
-	contextl = context;
-	frame = browser->get_main_frame(browser);
-
-	return context;
-}
 
 int CEF_CALLBACK hook_cef_on_key_event(struct _cef_keyboard_handler_t* self,
 	struct _cef_browser_t* browser,
@@ -52,6 +38,18 @@ int CEF_CALLBACK hook_cef_on_key_event(struct _cef_keyboard_handler_t* self,
 	return CAST_TO(origin_cef_on_key_event, hook_cef_on_key_event)(self, browser, event, os_event);
 }
 
+
+void process_context(cef_v8context_t* context);
+
+cef_v8context_t* hook_cef_v8context_get_current_context() {
+	cef_v8context_t* context = CAST_TO(origin_cef_v8context_get_current_context, hook_cef_v8context_get_current_context)();
+	auto frame = context->get_frame(context);
+	if (frame->is_main(frame)) {
+		process_context(frame->get_v8context(frame));
+	}
+
+	return context;
+}
 
 struct _cef_keyboard_handler_t* CEF_CALLBACK hook_cef_get_keyboard_handler(struct _cef_client_t* self) {
 	auto keyboard_handler = CAST_TO(origin_cef_get_keyboard_handler, hook_cef_get_keyboard_handler)(self);
@@ -64,18 +62,13 @@ struct _cef_keyboard_handler_t* CEF_CALLBACK hook_cef_get_keyboard_handler(struc
 }
 
 
+
 void CEF_CALLBACK hook_cef_on_load_start(struct _cef_load_handler_t* self,
 	struct _cef_browser_t* browser,
 	struct _cef_frame_t* frame,
 	cef_transition_type_t transition_type) {
-
-	auto cef_browser_host = browser->get_host(browser);
-	auto hwnd = browser->get_host(browser)->get_window_handle(cef_browser_host);
-	SetLayeredWindowAttributes(hwnd, NULL, NULL, NULL);
-
-
+	EasyCEFHooks::onLoadStart(browser, frame);
 	CAST_TO(origin_cef_on_load_start, hook_cef_on_load_start)(self, browser, frame, transition_type);
-	EasyCEFHooks::onLoadStart(browser, frame, transition_type);
 }
 
 void CEF_CALLBACK hook_cef_on_load_error(struct _cef_load_handler_t* self,
@@ -129,20 +122,12 @@ void CEF_CALLBACK hook_on_before_command_line_processing(
 	struct _cef_app_t* self,
 	const cef_string_t* process_type,
 	struct _cef_command_line_t* command_line) {
-
-		{
-			CefString str = "disable-web-security";
-			command_line->append_switch(command_line, str.GetStruct());
-		}
-		{
-			CefString str = "ignore-certificate-errors";
-			command_line->append_switch(command_line, str.GetStruct());
-		}
-
-		origin_command_line_append_switch = command_line->append_switch;
-		command_line->append_switch = hook_command_line_append_switch;
-		CAST_TO(origin_on_before_command_line_processing, hook_on_before_command_line_processing)(self, process_type, command_line);
+	EasyCEFHooks::onCommandLine(command_line);
+	origin_command_line_append_switch = command_line->append_switch;
+	command_line->append_switch = hook_command_line_append_switch;
+	CAST_TO(origin_on_before_command_line_processing, hook_on_before_command_line_processing)(self, process_type, command_line);
 }
+
 
 
 
@@ -153,6 +138,8 @@ int hook_cef_initialize(const struct _cef_main_args_t* args,
 
 	_cef_settings_t s = *settings;
 	s.background_color = 0x000000ff;
+
+
 
 	origin_on_before_command_line_processing = application->on_before_command_line_processing;
 	application->on_before_command_line_processing = hook_on_before_command_line_processing;
@@ -166,23 +153,23 @@ class CefRequestMITMProcess {
 	const static int bytesPerTime = 65535;
 
 public:
-	string url;
-	vector<char> data;
+	std::string url;
+	std::vector<char> data;
 	int datasize = 0;
 	int dataPointer = 0;
-	void fillData(wstring s) {
-		fillData(wstring_to_utf8(s));
+	void fillData(const std::wstring& s) {
+		fillData(util::wstring_to_utf8(s));
 	};
-	void fillData(string s) {
+	void fillData(const std::string& s) {
 		data = std::vector<char>(s.begin(), s.end());
 	};
 	void fillData(_cef_resource_handler_t* self, _cef_callback_t* callback);
-	wstring getDataStr() {
+	std::wstring getDataStr() {
 		try {
-			return utf8_to_wstring(string(data.begin(), data.end()));
+			return util::utf8_to_wstring(std::string(data.begin(), data.end()));
 		}
-		catch (exception e) {
-			alert(e.what());
+		catch (std::exception& e) {
+			util::alert(e.what());
 			return L"";
 		}
 
@@ -217,7 +204,7 @@ public:
 	}
 };
 
-map<_cef_resource_handler_t*, CefRequestMITMProcess> urlMap;
+std::map<_cef_resource_handler_t*, CefRequestMITMProcess> urlMap;
 
 int CEF_CALLBACK hook_scheme_handler_read(struct _cef_resource_handler_t* self,
 	void* data_out,
@@ -231,9 +218,9 @@ int CEF_CALLBACK hook_scheme_handler_read(struct _cef_resource_handler_t* self,
 	auto processor = EasyCEFHooks::onHijackRequest(urlMap[self].url);
 
 	if (processor) {
-		cout << urlMap[self].url << " hijacked" << endl;
+		std::cout << urlMap[self].url << " hijacked" << std::endl;
 		urlMap[self].fillData(self, callback);
-		urlMap[self].fillData(wstring_to_utf8(processor(urlMap[self].getDataStr())));
+		urlMap[self].fillData(util::wstring_to_utf8(processor(urlMap[self].getDataStr())));
 		if (urlMap[self].sendData(data_out, bytes_to_read, bytes_read))return 1;
 		else {
 			urlMap.erase(self);
@@ -305,7 +292,7 @@ bool EasyCEFHooks::InstallHooks() {
 	origin_cef_register_scheme_handler_factory = DetourFindFunction("libcef.dll", "cef_register_scheme_handler_factory");
 
 	if (origin_cef_v8context_get_current_context)
-		DetourAttach(&origin_cef_v8context_get_current_context, (PVOID)hook_cef_v8context_get_current_context);
+		DetourAttach(&origin_cef_v8context_get_current_context, hook_cef_v8context_get_current_context);
 	else
 		return false;
 
@@ -331,15 +318,18 @@ bool EasyCEFHooks::InstallHooks() {
 
 bool EasyCEFHooks::UninstallHook()
 {
-	DetourTransactionBegin();
-	DetourUpdateThread(GetCurrentThread());
-	DetourDetach(&origin_cef_v8context_get_current_context, hook_cef_v8context_get_current_context);
-	DetourDetach(&origin_cef_browser_host_create_browser, hook_cef_browser_host_create_browser);
-	LONG ret = DetourTransactionCommit();
-	return ret == NO_ERROR;
+	//DetourTransactionBegin();
+	//DetourUpdateThread(GetCurrentThread());
+	//DetourDetach(&origin_cef_browser_host_create_browser, hook_cef_browser_host_create_browser);
+	//DetourDetach(&origin_cef_register_scheme_handler_factory, hook_cef_register_scheme_handler_factory);
+	//DetourDetach(&origin_cef_initialize, hook_cef_initialize);
+	//DetourDetach(&origin_cef_v8context_get_current_context, hook_cef_v8context_get_current_context);
+
+	//LONG ret = DetourTransactionCommit();
+	return true;
 }
 
-void EasyCEFHooks::executeJavaScript(_cef_frame_t* frame, string script, string url) {
+void EasyCEFHooks::executeJavaScript(_cef_frame_t* frame, const std::string& script, const std::string& url) {
 	CefString exec_script = script;
 	CefString purl = url;
 	frame->execute_java_script(frame, exec_script.GetStruct(), purl.GetStruct(), 0);

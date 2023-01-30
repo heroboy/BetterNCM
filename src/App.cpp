@@ -3,69 +3,38 @@
 #include <Windows.h>
 #include "dwmapi.h"
 #include "CommDlg.h"
+#include <NativePlugin.h>
+
 #define WIN32_LEAN_AND_MEAN
+
+using namespace util;
 
 namespace fs = std::filesystem;
 
-const auto version = "0.2.4";
+const std::string version = "1.0.0";
 
 extern BNString datapath;
 
 nlohmann::json config;
 std::mutex configMutex;
 
-string App::readConfig(const string& key, const string& def) {
+
+
+std::string App::readConfig(const std::string& key, const std::string& def) {
 	std::lock_guard<std::mutex> lock(configMutex);
 
 	auto it = config.find(key);
 	if (it == config.end()) {
 		return def;
 	}
-	return it.value().get<string>();
+	return it.value().get<std::string>();
 }
 
-void App::writeConfig(const string& key, const string& value) {
+void App::writeConfig(const std::string& key, const std::string& value) {
 	std::lock_guard<std::mutex> lock(configMutex);
 	config[key] = value;
-	ofstream file("config.json");
+	std::ofstream file(datapath + L"\\config.json");
 	file << config;
-}
-
-void exec(string cmd, bool ele, bool showWindow = false)
-{
-	STARTUPINFOW si = { 0 };
-	si.cb = sizeof(si);
-	PROCESS_INFORMATION pi = { 0 };
-
-	vector<string> result;
-	pystring::split(cmd, result, " ");
-
-	vector<string> args;
-	for (int x = 1; x < (int)result.size(); x++)
-	{
-		args.push_back(result[x]);
-	}
-	auto file = s2ws(result[0]);
-	auto eargs = s2ws(pystring::join(" ", args));
-	SHELLEXECUTEINFO shExecInfo;
-	shExecInfo.lpFile = file.c_str();
-	shExecInfo.cbSize = sizeof(SHELLEXECUTEINFO);
-	shExecInfo.lpParameters = eargs.c_str();
-	shExecInfo.fMask = NULL;
-	shExecInfo.hwnd = NULL;
-	if (ele)
-		shExecInfo.lpVerb = L"runas";
-	else
-		shExecInfo.lpVerb = L"open";
-
-	shExecInfo.lpDirectory = NULL;
-	if (showWindow)
-		shExecInfo.nShow = SW_SHOW;
-	else
-		shExecInfo.nShow = SW_HIDE;
-	shExecInfo.hInstApp = NULL;
-
-	ShellExecuteEx(&shExecInfo);
 }
 
 #define checkApiKey                                                                                  \
@@ -75,7 +44,7 @@ void exec(string cmd, bool ele, bool showWindow = false)
 		return;                                                                                      \
 	}
 
-std::thread* App::create_server(string apiKey)
+std::thread* App::create_server(const std::string& apiKey)
 {
 	if (this->server_thread) return server_thread;
 	this->httpServer = new httplib::Server();
@@ -119,6 +88,98 @@ std::thread* App::create_server(string apiKey)
 	buffer << t.rdbuf();
 	res.set_content(buffer.str(), "text/plain");
 		});
+
+	svr->Get("/api/fs/read_file", [&](const httplib::Request& req, httplib::Response& res) {
+		checkApiKey;
+	using namespace std;
+	namespace fs = std::filesystem;
+
+	BNString file_path = req.get_param_value("path");
+
+	if (file_path[1] != ':') {
+		file_path = datapath + L"/" + file_path;
+	}
+
+	std::ifstream file(file_path, std::ios::binary);
+
+	res.set_header("Content-Type", "application/octet-stream");
+
+	res.body.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+
+		});
+
+	svr->Get("/api/fs/mount_file", [&](const httplib::Request& req, httplib::Response& res) {
+		checkApiKey;
+	using namespace std;
+	namespace fs = std::filesystem;
+
+
+
+	BNString file_path = req.get_param_value("path");
+
+	if (file_path[1] != ':') {
+		file_path = datapath + L"/" + file_path;
+	}
+
+	auto ext = fs::path((wstring)file_path).extension().string();
+	auto mountPoint = "/mounted_file/" + util::random_string(48) + ext;
+	auto port = this->server_port;
+	svr->Get(mountPoint, [=](const httplib::Request& req, httplib::Response& res) {
+		const size_t DATA_CHUNK_SIZE = 65536;
+	std::filebuf* pbuf;
+	std::ifstream* filestr = new std::ifstream();
+	long size;
+
+	filestr->open(file_path, std::ios::binary);
+	pbuf = filestr->rdbuf();
+	size = pbuf->pubseekoff(0, std::ios::end, std::ios::in);
+
+
+
+
+	res.set_header("Content-Disposition", "inline;");
+	res.set_content_provider(
+		size, util::guessMimeType(ext),
+		[pbuf](size_t offset, size_t length, httplib::DataSink& sink) {
+
+			char* data = new char[DATA_CHUNK_SIZE];
+	const auto d = data;
+	auto out_len = min(static_cast<size_t>(length), DATA_CHUNK_SIZE);
+
+	pbuf->pubseekpos(offset);
+	pbuf->sgetn(data, out_len);
+
+	auto ret = sink.write(&d[0], out_len);
+	delete[] data;
+	return true;
+		}, [filestr](bool s) {
+			filestr->close();
+		delete filestr;
+		});
+		});
+
+	res.set_content("http://localhost:" + std::to_string(port) + mountPoint, "text/plain");
+		});
+
+	svr->Get("/api/fs/mount_dir", [&](const httplib::Request& req, httplib::Response& res) {
+		checkApiKey;
+	using namespace std;
+	namespace fs = std::filesystem;
+
+	const size_t SIZE_PER_TIME = 10000;
+
+	BNString file_path = req.get_param_value("path");
+
+	if (file_path[1] != ':') {
+		file_path = datapath + L"/" + file_path;
+	}
+
+	auto mountPoint = "/mounted_dir/" + util::random_string(48);
+	svr->set_mount_point(mountPoint, file_path);
+	res.set_content("http://localhost:" + std::to_string(this->server_port) + mountPoint, "text/plain");
+		});
+
+
 
 	svr->Get("/api/fs/unzip_file", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
@@ -256,14 +317,14 @@ std::thread* App::create_server(string apiKey)
 
 	svr->Post("/api/app/exec", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
-	auto cmd = req.body;
+	BNString cmd = req.body;
 	exec(cmd, false, req.has_param("_showWindow"));
 	res.status = 200;
 		});
 
 	svr->Post("/api/app/exec_ele", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
-	auto cmd = req.body;
+	BNString cmd = req.body;
 	exec(cmd, true, req.has_param("_showWindow"));
 	res.status = 200;
 		});
@@ -296,7 +357,7 @@ std::thread* App::create_server(string apiKey)
 
 	svr->Get("/api/app/reload_plugin", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
-	extractPlugins();
+	PluginsLoader::extractPackedPlugins();
 	res.status = 200;
 		});
 
@@ -308,7 +369,7 @@ std::thread* App::create_server(string apiKey)
 
 	svr->Get("/api/app/show_console", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
-	ShowWindow(GetConsoleWindow(), SW_SHOW);
+	ShowWindow(GetConsoleWindow(), req.has_param("hide") ? SW_HIDE : SW_SHOW);
 	res.status = 200;
 		});
 
@@ -330,8 +391,8 @@ std::thread* App::create_server(string apiKey)
 		checkApiKey;
 	HWND ncmWin = FindWindow(L"OrpheusBrowserHost", NULL);
 	SetWindowDisplayAffinity(ncmWin, WDA_EXCLUDEFROMCAPTURE);
-	screenCapturePart(s2ws(datapath.utf8() + "/screenshot.bmp").c_str());
-	res.set_content("http://localhost:3248/local/screenshot.bmp", "text/plain");
+	ScreenCapturePart screenCapturePart;
+	res.set_content(screenCapturePart.getData(), screenCapturePart.getDataSize(), "application/octet-stream");
 	SetWindowDisplayAffinity(ncmWin, WDA_NONE);
 		});
 
@@ -367,23 +428,6 @@ std::thread* App::create_server(string apiKey)
 		});
 
 
-	svr->Get("/api/app/get_win_position", [&](const httplib::Request& req, httplib::Response& res) {
-		HWND ncmWin = FindWindow(L"OrpheusBrowserHost", NULL);
-	int x = 0, y = 0;
-	RECT rect = { NULL };
-
-	int xo = GetSystemMetrics(SM_XVIRTUALSCREEN);
-	int yo = GetSystemMetrics(SM_YVIRTUALSCREEN);
-
-	if (GetWindowRect(ncmWin, &rect)) {
-		x = rect.left;
-		y = rect.top;
-	}
-
-	res.set_content((string("{\"x\":")) + to_string(x - xo) + ",\"y\":" + to_string(y - yo) + "}", "application/json");
-
-		});
-
 	svr->Get("/api/app/open_file_dialog", [&](const httplib::Request& req, httplib::Response& res) {
 		checkApiKey;
 	TCHAR szBuffer[MAX_PATH] = { 0 };
@@ -400,8 +444,8 @@ std::thread* App::create_server(string apiKey)
 	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER;
 	BOOL bSel = GetOpenFileName(&ofn);
 
-	wstring path = szBuffer;
-	res.set_content(ws2s(path), "text/plain");
+	BNString path = std::wstring(szBuffer);
+	res.set_content(path.utf8(), "text/plain");
 
 		});
 
@@ -412,7 +456,7 @@ std::thread* App::create_server(string apiKey)
 
 		});
 
-	svr->set_mount_point("/local", datapath);
+	svr->set_mount_point("/local", datapath.utf8());
 
 
 
@@ -421,42 +465,46 @@ std::thread* App::create_server(string apiKey)
 	return server_thread;
 }
 
-// https://stackoverflow.com/questions/440133/how-do-i-create-a-random-alpha-numeric-string-in-c
-std::string random_string(std::string::size_type length)
+
+
+
+
+void App::parseConfig()
 {
-	static auto& chrs = "0123456789"
-		"abcdefghijklmnopqrstuvwxyz"
-		"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-	thread_local static std::mt19937 rg{ std::random_device{}() };
-	thread_local static std::uniform_int_distribution<std::string::size_type> pick(0, sizeof(chrs) - 2);
-
-	std::string s;
-
-	s.reserve(length);
-
-	while (length--)
-		s += chrs[pick(rg)];
-
-	return s;
+	std::lock_guard<std::mutex> lock(configMutex);
+	if (fs::exists(datapath + L"\\config.json")) {
+		try {
+			config = nlohmann::json::parse(read_to_string(datapath + L"\\config.json"));
+		}
+		catch (std::exception e) {
+			std::wcout << L"[BetterNCM] 解析配置文件失败！将使用默认配置文件\n\n";
+		}
+	}
 }
 
 App::App()
 {
 
-	cout << "BetterNCM v" << version << " running on NCM " << getNCMExecutableVersion() << endl;
+	std::cout << "BetterNCM v" << version << " running on NCM " << getNCMExecutableVersion() << std::endl;
 
-	std::lock_guard<std::mutex> lock(configMutex);
-	std::ifstream file("config.json");
-	file >> config;
+	parseConfig();
 
-	extractPlugins();
+
+	PluginsLoader::extractPackedPlugins();
+	PluginsLoader::loadAll();
+	if (readConfig("cc.microblock.betterncm.single-process", "false") == "true")
+		for (auto& plugin : PluginsLoader::plugins) {
+			plugin.loadNativePluginDll();
+		}
 
 	auto apiKey = random_string(64);
 
 	server_thread = create_server(apiKey);
 
-	EasyCEFHooks::onKeyEvent = [](auto client, auto browser, auto event)
+
+
+
+	EasyCEFHooks::onKeyEvent = [](_cef_client_t* client, struct _cef_browser_t* browser, const struct _cef_key_event_t* event)
 	{
 		if (event->type == KEYEVENT_KEYUP &&
 #if _DEBUG
@@ -467,9 +515,12 @@ App::App()
 			)
 		{
 			auto cef_browser_host = browser->get_host(browser);
-			if (browser->get_host(browser)->has_dev_tools(cef_browser_host))
+
+			if (browser->is_popup(browser) || browser->get_host(browser)->has_dev_tools(cef_browser_host))
 			{
-				browser->get_host(browser)->close_dev_tools(cef_browser_host);
+				HWND hwnd = FindWindow(NULL, L"EasyCEFInject DevTools");
+				if (hwnd)
+					DestroyWindow(hwnd);
 			}
 			else
 			{
@@ -482,15 +533,45 @@ App::App()
 		}
 	};
 
-	EasyCEFHooks::onLoadStart = [=](_cef_browser_t* browser, _cef_frame_t* frame, auto transition_type)
+	EasyCEFHooks::onCommandLine = [&](struct _cef_command_line_t* command_line) {
+		auto append = [&](BNString s) {
+			CefString str = s;
+			command_line->append_switch(command_line, str.GetStruct());
+		};
+
+		append("disable-web-security");
+		append("ignore-certificate-errors");
+
+		if (readConfig("cc.microblock.betterncm.single-process", "false") == "true")
+			append("single-process");
+
+		if (readConfig("cc.microblock.betterncm.experimental.optimize-memory", "false") == "true") {
+			append("process-per-site");
+			append("enable-low-end-device-mode");
+			append("enable-low-res-tiling");
+		}
+	};
+
+	EasyCEFHooks::onLoadStart = [=](_cef_browser_t* browser, _cef_frame_t* frame)
 	{
 		if (frame->is_main(frame) && frame->is_valid(frame))
 		{
-			wstring url = frame->get_url(frame)->str;
+			auto cef_browser_host = browser->get_host(browser);
+			auto hwnd = browser->get_host(browser)->get_window_handle(cef_browser_host);
+			SetLayeredWindowAttributes(hwnd, NULL, NULL, NULL);
 
+			std::wstring url = frame->get_url(frame)->str;
 			EasyCEFHooks::executeJavaScript(frame,
 				R"(
-!(function fixNCMReloadPosition() {
+(location.pathname==="/pub/app.html")&&!(function fixNCMSideBarDisappear() {
+	setTimeout(()=>{
+		document.head.appendChild(dom('style', { innerHTML:"#x-g-mn>.g-sd{display: block !important}" }));
+	},1000)
+})();
+)", "betterncm://betterncm/fix_side_bar_disappear.js");
+			EasyCEFHooks::executeJavaScript(frame,
+				R"(
+(location.pathname==="/pub/app.html")&&!(function fixNCMReloadPosition() {
 	let oChannelCall = channel.call;
 	channel.call = (name,...args) => {
 		if (name === "winhelper.setWindowPosition" && window.screenX !== 0) return; 
@@ -501,13 +582,13 @@ App::App()
 
 			EasyCEFHooks::executeJavaScript(frame,
 				"const BETTERNCM_API_KEY='" + apiKey + "'; " +
-				"const BETTERNCM_API_PORT = " + to_string(this->server_port) + ";" +
-				"const BETTERNCM_API_PATH = 'http://localhost:" + to_string(this->server_port) + "/api'; " +
-				"const BETTERNCM_FILES_PATH = 'http://localhost:" + to_string(this->server_port) + "/local';" +
+				"const BETTERNCM_API_PORT = " + std::to_string(this->server_port) + ";" +
+				"const BETTERNCM_API_PATH = 'http://localhost:" + std::to_string(this->server_port) + "/api'; " +
+				"const BETTERNCM_FILES_PATH = 'http://localhost:" + std::to_string(this->server_port) + "/local';" +
 				"console.log('BetterNCM API Initialized on',BETTERNCM_API_PORT);" +
 				load_string_resource(L"framework.js"), "betterncm://betterncm/framework.js");
 
-			auto loadStartupScripts = [&](string path)
+			auto loadStartupScripts = [&](const std::string& path)
 			{
 				if (fs::exists(path))
 					for (const auto file : fs::directory_iterator(path))
@@ -520,9 +601,9 @@ App::App()
 									std::string("file://") + file.path().string() + "/startup_script.js");
 							}
 						}
-						catch (std::exception e)
+						catch (std::exception& e)
 						{
-							cout << "Failed to load startup script " << e.what();
+							std::cout << "Failed to load startup script " << e.what();
 						}
 					}
 			};
@@ -534,9 +615,9 @@ App::App()
 		}
 	};
 
-	auto loadHijacking = [&](string path)
+	auto loadHijacking = [&](const std::string& path)
 	{
-		vector<nlohmann::json> satisfied_hijacks;
+		std::vector<nlohmann::json> satisfied_hijacks;
 		if (fs::exists(path))
 			for (const auto& file : fs::directory_iterator(path))
 			{
@@ -572,33 +653,33 @@ App::App()
 				}
 				catch (std::invalid_argument e)
 				{
-					write_file_text(datapath.utf8() + "/log.log", string("\n[" + file.path().string() + "]Plugin Hijacking Error: ") + (e.what()), true);
+					write_file_text(datapath.utf8() + "/log.log", std::string("\n[" + file.path().string() + "]Plugin Hijacking Error: ") + (e.what()), true);
 				}
 			}
 		return satisfied_hijacks;
 	};
 
-	vector<nlohmann::json> satisfied_hijacks = loadHijacking(datapath.utf8() + "/plugins_runtime");
+	std::vector<nlohmann::json> satisfied_hijacks = loadHijacking(datapath.utf8() + "/plugins_runtime");
 
 
-	EasyCEFHooks::onHijackRequest = [=](string url) -> std::function<wstring(wstring)>
+	EasyCEFHooks::onHijackRequest = [=](std::string url) -> std::function<std::wstring(std::wstring)>
 	{
 		if (readConfig("cc.microblock.betterncm.cpp_side_inject_feature_disabled", "false") == "true")return nullptr;
-		vector<nlohmann::json> this_hijacks;
+		std::vector<nlohmann::json> this_hijacks;
 
-		auto filter_hijacks = [&](vector<nlohmann::json> full)
+		auto filter_hijacks = [&](std::vector<nlohmann::json> full)
 		{
 			for (const auto& hijack : full)
 				for (const auto& [hij_url, hij] : hijack.items())
 				{
 					if (pystring::startswith(url, hij_url))
 					{
-						vector<nlohmann::json> hijs = {};
+						std::vector<nlohmann::json> hijs = {};
 
 						if (hij.is_array())
-							hijs = hij.get<vector<nlohmann::json>>();
+							hijs = hij.get<std::vector<nlohmann::json>>();
 						else if (hij.is_object())
-							hijs = vector<nlohmann::json>{ hij };
+							hijs = std::vector<nlohmann::json>{ hij };
 
 						this_hijacks.insert(this_hijacks.end(), hijs.begin(), hijs.end());
 					}
@@ -610,7 +691,7 @@ App::App()
 		auto satisfied_hijacks_dev = loadHijacking(datapath.utf8() + "/plugins_dev");
 		filter_hijacks(satisfied_hijacks_dev);
 
-		std::function<wstring(wstring)> processor = nullptr;
+		std::function<std::wstring(std::wstring)> processor = nullptr;
 
 		if (pystring::startswith(url, "orpheus://orpheus/pub/app.html"))
 			this_hijacks.push_back(nlohmann::json({ {"type", "replace"},
@@ -623,43 +704,43 @@ App::App()
 												   {"id", "splash_screen"} }));
 
 		if (this_hijacks.size())
-			processor = [=](wstring code)
+			processor = [=](std::wstring code)
 		{
 			for (const auto hijack : this_hijacks)
 			{
 				try
 				{
-					if (hijack["type"].get<string>() == "regex")
+					if (hijack["type"].get<std::string>() == "regex")
 					{
-						const std::wregex hijack_regex{ utf8_to_wstring(hijack["from"].get<string>()) };
-						code = std::regex_replace(code, hijack_regex, utf8_to_wstring(hijack["to"].get<string>()));
+						const std::wregex hijack_regex{ utf8_to_wstring(hijack["from"].get<std::string>()) };
+						code = std::regex_replace(code, hijack_regex, utf8_to_wstring(hijack["to"].get<std::string>()));
 					}
 
-					if (hijack["type"].get<string>() == "replace")
+					if (hijack["type"].get<std::string>() == "replace")
 					{
-						code = wreplaceAll(code, utf8_to_wstring(hijack["from"].get<string>()), utf8_to_wstring(hijack["to"].get<string>()));
+						code = wreplaceAll(code, utf8_to_wstring(hijack["from"].get<std::string>()), utf8_to_wstring(hijack["to"].get<std::string>()));
 					}
 
-					if (hijack["type"].get<string>() == "append")
+					if (hijack["type"].get<std::string>() == "append")
 					{
-						code += utf8_to_wstring(hijack["code"].get<string>());
+						code += utf8_to_wstring(hijack["code"].get<std::string>());
 					}
 
-					if (hijack["type"].get<string>() == "prepend")
+					if (hijack["type"].get<std::string>() == "prepend")
 					{
-						code = utf8_to_wstring(hijack["code"].get<string>()) + code;
+						code = utf8_to_wstring(hijack["code"].get<std::string>()) + code;
 					}
 
-					string id = "<missing_id>";
+					std::string id = "<missing_id>";
 					if (hijack.contains("id") && hijack["id"].is_string())
-						id = hijack["id"].get<string>();
+						id = hijack["id"].get<std::string>();
 
 					std::lock_guard<std::shared_timed_mutex> guard(succeeded_hijacks_lock);
-					succeeded_hijacks.push_back(hijack["plugin_name"].get<string>() + "::" + id);
+					succeeded_hijacks.push_back(hijack["plugin_name"].get<std::string>() + "::" + id);
 				}
-				catch (std::exception e)
+				catch (std::exception& e)
 				{
-					cout << "Failed to hijack: " << e.what() << endl;
+					std::cout << "Failed to hijack: " << e.what() << std::endl;
 				}
 			}
 			return code;
@@ -668,9 +749,19 @@ App::App()
 		return processor;
 	};
 
-	EasyCEFHooks::onAddCommandLine = [&](string arg)
+	EasyCEFHooks::onAddCommandLine = [&](const std::string& arg)
 	{
-		return pystring::index(arg, "disable-gpu") == -1;
+		bool remove = false;
+
+		if (readConfig("cc.microblock.betterncm.remove-disable-gpu", "false") == "true") {
+			remove = remove || pystring::index(arg, "disable-gpu") != -1;
+		}
+
+		if (readConfig("cc.microblock.betterncm.disable-logging", "true") == "true") {
+			remove = remove || pystring::index(arg, "log-file") != -1;
+		}
+
+		return !remove;
 	};
 
 	EasyCEFHooks::InstallHooks();
@@ -683,44 +774,7 @@ App::~App()
 	server_thread->detach();
 	delete server_thread;
 	httpServer = nullptr;
-	EasyCEFHooks::UninstallHook();
 
 	if (fs::exists(datapath.utf8() + "/plugins_runtime"))
 		fs::remove_all(datapath.utf8() + "/plugins_runtime");
-}
-
-void App::extractPlugins()
-{
-	error_code ec;
-	if (fs::exists(datapath.utf8() + "/plugins_runtime"))
-		fs::remove_all(datapath.utf8() + "/plugins_runtime", ec);
-
-	fs::create_directories(datapath.utf8() + "/plugins_runtime");
-
-	for (auto file : fs::directory_iterator(datapath.utf8() + "/plugins"))
-	{
-		auto path = file.path().string();
-		if (pystring::endswith(path, ".plugin"))
-		{
-			zip_extract(path.c_str(), (datapath.utf8() + "/plugins_runtime/tmp").c_str(), NULL, NULL);
-			try
-			{
-				auto modManifest = nlohmann::json::parse(read_to_string(datapath.utf8() + "/plugins_runtime/tmp/manifest.json"));
-				if (modManifest["manifest_version"] == 1)
-				{
-					write_file_text(datapath.utf8() + "/plugins_runtime/tmp/.plugin.path.meta", pystring::slice(path, datapath.length()));
-					fs::rename(datapath.utf8() + "/plugins_runtime/tmp", datapath.utf8() + "/plugins_runtime/" + (string)modManifest["name"]);
-				}
-				else
-				{
-					throw new exception("Unsupported manifest version.");
-				}
-			}
-			catch (exception e)
-			{
-				write_file_text(datapath.utf8() + "/log.log", BNString::fromGBK(string("\nPlugin Loading Error: ") + (e.what())), true);
-				fs::remove_all(datapath.utf8() + "/plugins_runtime/tmp");
-			}
-		}
-	}
 }
